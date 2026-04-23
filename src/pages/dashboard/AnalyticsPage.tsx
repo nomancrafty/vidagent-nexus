@@ -1,145 +1,173 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getCampaigns, getAnalytics } from '@/services/dataService';
-import { Analytics, Campaign } from '@/types/data';
+import { getCampaigns, getLeads, getVideos } from '@/services/dataService';
+import { Campaign, Lead, Video } from '@/types/data';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  BarChart,
-  Bar,
-  Legend,
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  FunnelChart, Funnel, LabelList,
 } from 'recharts';
 import {
-  TrendingUp,
-  Eye,
-  Mail,
-  MessageSquare,
-  Download,
-  Calendar,
+  Users, CheckCircle2, Video as VideoIcon, Send,
+  XCircle, Clock, Loader2,
 } from 'lucide-react';
 
 export default function AnalyticsPage() {
   const { user } = useAuth();
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [videos, setVideos] = useState<Video[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [dateRange, setDateRange] = useState('7d');
-  const [selectedCampaign, setSelectedCampaign] = useState('all');
+  const [isLoading, setIsLoading] = useState(true);
 
-  const loadData = useCallback(() => {
-    if (user) {
-      setAnalytics(getAnalytics(user.id));
+  const loadData = useCallback(async () => {
+    if (!user) return;
+    setIsLoading(true);
+    try {
+      const [allLeads, allVideos] = await Promise.all([
+        getLeads(user.id),
+        getVideos(user.id),
+      ]);
+      setLeads(allLeads);
+      setVideos(allVideos);
       setCampaigns(getCampaigns(user.id));
+    } finally {
+      setIsLoading(false);
     }
   }, [user]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  useEffect(() => { loadData(); }, [loadData]);
 
-  // Generate mock time-series data based on analytics
-  const generateTimeData = () => {
-    const days = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90;
-    const data = [];
-    const now = new Date();
-    
-    for (let i = days - 1; i >= 0; i--) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      data.push({
-        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        opens: analytics ? Math.round(analytics.emailOpenRate * (0.8 + Math.random() * 0.4)) : 0,
-        watches: analytics ? Math.round(analytics.videoWatchRate * (0.8 + Math.random() * 0.4)) : 0,
-        replies: analytics ? Math.round(analytics.replyRate * (0.8 + Math.random() * 0.4)) : 0,
-      });
-    }
-    return data;
+  // ── Derived counts ─────────────────────────────────────────────────────────
+
+  const leadCounts = {
+    total: leads.length,
+    valid: leads.filter(l => l.status === 'valid').length,
+    invalid: leads.filter(l => l.status === 'invalid').length,
+    pending: leads.filter(l => l.status === 'uploaded' || l.status === 'verifying').length,
   };
 
-  const timeData = generateTimeData();
+  const videoCounts = {
+    total: videos.length,
+    completed: videos.filter(v => v.status === 'completed').length,
+    processing: videos.filter(v => v.status === 'processing' || v.status === 'script_ready' || v.status === 'generating_script').length,
+    failed: videos.filter(v => v.status === 'failed').length,
+    pending: videos.filter(v => v.status === 'pending').length,
+  };
 
-  const pieData = analytics ? [
-    { name: 'Opened', value: analytics.emailOpenRate, color: 'hsl(var(--primary))' },
-    { name: 'Watched', value: analytics.videoWatchRate, color: 'hsl(var(--accent))' },
-    { name: 'Replied', value: analytics.replyRate, color: 'hsl(var(--success))' },
-    { name: 'No Action', value: 100 - analytics.emailOpenRate, color: 'hsl(var(--muted))' },
-  ] : [];
+  const campaignCounts = {
+    total: campaigns.length,
+    running: campaigns.filter(c => c.status === 'running').length,
+    completed: campaigns.filter(c => c.status === 'completed').length,
+    draft: campaigns.filter(c => c.status === 'draft').length,
+  };
 
-  const statsCards = analytics ? [
-    { label: 'Email Open Rate', value: `${analytics.emailOpenRate}%`, icon: Mail, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-    { label: 'Video Watch Rate', value: `${analytics.videoWatchRate}%`, icon: Eye, color: 'text-purple-500', bg: 'bg-purple-500/10' },
-    { label: 'Reply Rate', value: `${analytics.replyRate}%`, icon: MessageSquare, color: 'text-green-500', bg: 'bg-green-500/10' },
-    { label: 'Engagement Score', value: `${Math.round((analytics.emailOpenRate + analytics.videoWatchRate + analytics.replyRate) / 3)}%`, icon: TrendingUp, color: 'text-orange-500', bg: 'bg-orange-500/10' },
-  ] : [];
+  // ── KPI cards ──────────────────────────────────────────────────────────────
+
+  const kpiCards = [
+    {
+      label: 'Total Leads',
+      value: leadCounts.total,
+      sub: `${leadCounts.valid} verified`,
+      icon: Users,
+      color: 'text-blue-500',
+      bg: 'bg-blue-500/10',
+    },
+    {
+      label: 'Valid Emails',
+      value: leadCounts.valid,
+      sub: leadCounts.total > 0
+        ? `${Math.round((leadCounts.valid / leadCounts.total) * 100)}% of total`
+        : '—',
+      icon: CheckCircle2,
+      color: 'text-green-500',
+      bg: 'bg-green-500/10',
+    },
+    {
+      label: 'Videos Generated',
+      value: videoCounts.completed,
+      sub: `${videoCounts.processing} in progress`,
+      icon: VideoIcon,
+      color: 'text-purple-500',
+      bg: 'bg-purple-500/10',
+    },
+    {
+      label: 'Active Campaigns',
+      value: campaignCounts.running,
+      sub: `${campaignCounts.completed} completed`,
+      icon: Send,
+      color: 'text-orange-500',
+      bg: 'bg-orange-500/10',
+    },
+  ];
+
+  // ── Chart data ─────────────────────────────────────────────────────────────
+
+  // Funnel: pipeline stages
+  const funnelData = [
+    { name: 'Leads Uploaded', value: leadCounts.total, fill: 'hsl(var(--primary))' },
+    { name: 'Emails Verified', value: leadCounts.valid, fill: 'hsl(245 58% 60%)' },
+    { name: 'Videos Created', value: videoCounts.completed, fill: 'hsl(245 58% 68%)' },
+    { name: 'Campaigns Sent', value: campaignCounts.running + campaignCounts.completed, fill: 'hsl(245 58% 76%)' },
+  ];
+
+  // Donut: lead verification breakdown
+  const leadPieData = [
+    { name: 'Valid', value: leadCounts.valid, color: '#22c55e' },
+    { name: 'Invalid', value: leadCounts.invalid, color: '#ef4444' },
+    { name: 'Pending', value: leadCounts.pending, color: '#94a3b8' },
+  ].filter(d => d.value > 0);
+
+  // Bar: video job statuses
+  const videoBarData = [
+    { name: 'Completed', value: videoCounts.completed, fill: '#22c55e' },
+    { name: 'Processing', value: videoCounts.processing, fill: 'hsl(var(--primary))' },
+    { name: 'Pending', value: videoCounts.pending, fill: '#94a3b8' },
+    { name: 'Failed', value: videoCounts.failed, fill: '#ef4444' },
+  ];
+
+  // Bar: campaign statuses
+  const campaignBarData = [
+    { name: 'Draft', value: campaignCounts.draft, fill: '#94a3b8' },
+    { name: 'Running', value: campaignCounts.running, fill: 'hsl(var(--primary))' },
+    { name: 'Completed', value: campaignCounts.completed, fill: '#22c55e' },
+  ];
+
+  const tooltipStyle = {
+    backgroundColor: 'hsl(var(--card))',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: '8px',
+    fontSize: '12px',
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold">Analytics</h1>
-          <p className="text-muted-foreground mt-1">Track your campaign performance</p>
-        </div>
-        
-        <div className="flex items-center gap-3">
-          <Select value={dateRange} onValueChange={setDateRange}>
-            <SelectTrigger className="w-[140px]">
-              <Calendar className="w-4 h-4 mr-2" />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7d">Last 7 days</SelectItem>
-              <SelectItem value="30d">Last 30 days</SelectItem>
-              <SelectItem value="90d">Last 90 days</SelectItem>
-            </SelectContent>
-          </Select>
-          
-          <Select value={selectedCampaign} onValueChange={setSelectedCampaign}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="All Campaigns" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Campaigns</SelectItem>
-              {campaigns.map((c) => (
-                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          
-          <Button variant="outline">
-            <Download className="w-4 h-4 mr-2" />
-            Export
-          </Button>
-        </div>
+      <div>
+        <h1 className="text-3xl font-bold">Analytics</h1>
+        <p className="text-muted-foreground mt-1">Real-time overview of your outreach pipeline</p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {statsCards.map((stat, i) => (
-          <Card key={i} className="card-hover">
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {kpiCards.map((card, i) => (
+          <Card key={i}>
             <CardContent className="pt-6">
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">{stat.label}</p>
-                  <p className="text-3xl font-bold mt-1">{stat.value}</p>
+                  <p className="text-sm text-muted-foreground">{card.label}</p>
+                  <p className="text-3xl font-bold mt-1">{card.value}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{card.sub}</p>
                 </div>
-                <div className={`w-12 h-12 rounded-xl ${stat.bg} flex items-center justify-center`}>
-                  <stat.icon className={`w-6 h-6 ${stat.color}`} />
+                <div className={`w-12 h-12 rounded-xl ${card.bg} flex items-center justify-center shrink-0`}>
+                  <card.icon className={`w-6 h-6 ${card.color}`} />
                 </div>
               </div>
             </CardContent>
@@ -147,124 +175,243 @@ export default function AnalyticsPage() {
         ))}
       </div>
 
-      {/* Charts */}
-      <div className="grid lg:grid-cols-3 gap-6">
-        {/* Area Chart */}
-        <Card className="lg:col-span-2">
+      {/* Empty state */}
+      {leads.length === 0 && videos.length === 0 && campaigns.length === 0 && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+            <Users className="w-12 h-12 text-muted-foreground mb-4" />
+            <p className="text-lg font-medium">No data yet</p>
+            <p className="text-muted-foreground text-sm mt-1">
+              Upload leads and start a campaign to see analytics here.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Pipeline Funnel + Lead breakdown */}
+      {leads.length > 0 && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Funnel */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Outreach Pipeline</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <FunnelChart>
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Funnel dataKey="value" data={funnelData} isAnimationActive>
+                      <LabelList
+                        position="center"
+                        fill="#fff"
+                        fontSize={12}
+                        formatter={(v: number) => (v > 0 ? v : '')}
+                      />
+                    </Funnel>
+                  </FunnelChart>
+                </ResponsiveContainer>
+              </div>
+              {/* Legend */}
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 justify-center">
+                {funnelData.map(d => (
+                  <span key={d.name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: d.fill }} />
+                    {d.name} ({d.value})
+                  </span>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Lead verification donut */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Email Verification Breakdown</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {leadPieData.length > 0 ? (
+                <div className="h-[280px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={leadPieData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={70}
+                        outerRadius={110}
+                        paddingAngle={3}
+                        dataKey="value"
+                      >
+                        {leadPieData.map((entry, i) => (
+                          <Cell key={i} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend
+                        formatter={(value, entry: any) =>
+                          `${value} (${entry.payload.value})`
+                        }
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-[280px]">
+                  <div className="text-center">
+                    <Clock className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">No verification data yet</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Video + Campaign status bars */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        {/* Video job statuses */}
+        <Card>
           <CardHeader>
-            <CardTitle>Engagement Over Time</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <VideoIcon className="w-5 h-5 text-muted-foreground" />
+              Video Job Statuses
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeData}>
-                  <defs>
-                    <linearGradient id="colorOpens" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorWatches" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--accent))" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="hsl(var(--accent))" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="opens"
-                    stroke="hsl(var(--primary))"
-                    fillOpacity={1}
-                    fill="url(#colorOpens)"
-                    name="Email Opens"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="watches"
-                    stroke="hsl(var(--accent))"
-                    fillOpacity={1}
-                    fill="url(#colorWatches)"
-                    name="Video Watches"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {videos.length > 0 ? (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={videoBarData} barSize={40}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="value" name="Count" radius={[4, 4, 0, 0]}>
+                      {videoBarData.map((entry, i) => (
+                        <Cell key={i} fill={entry.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-[220px]">
+                <div className="text-center">
+                  <VideoIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">No videos yet</p>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* Pie Chart */}
+        {/* Campaign statuses */}
         <Card>
           <CardHeader>
-            <CardTitle>Engagement Breakdown</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="w-5 h-5 text-muted-foreground" />
+              Campaign Statuses
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={100}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {pieData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
-                    }}
-                  />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
+            {campaigns.length > 0 ? (
+              <div className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={campaignBarData} barSize={40}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Bar dataKey="value" name="Count" radius={[4, 4, 0, 0]}>
+                      {campaignBarData.map((entry, i) => (
+                        <Cell key={i} fill={entry.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-[220px]">
+                <div className="text-center">
+                  <Send className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">No campaigns yet</p>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Bar Chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Daily Performance</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={timeData.slice(-7)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    border: '1px solid hsl(var(--border))',
-                    borderRadius: '8px',
-                  }}
-                />
-                <Legend />
-                <Bar dataKey="opens" name="Opens" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="watches" name="Watches" fill="hsl(var(--accent))" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="replies" name="Replies" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Quick stats table */}
+      {(leads.length > 0 || videos.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Pipeline Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid sm:grid-cols-3 gap-6">
+              {/* Leads */}
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Leads</p>
+                {[
+                  { label: 'Total Uploaded', value: leadCounts.total, icon: Users, color: 'text-blue-500' },
+                  { label: 'Valid', value: leadCounts.valid, icon: CheckCircle2, color: 'text-green-500' },
+                  { label: 'Invalid', value: leadCounts.invalid, icon: XCircle, color: 'text-red-500' },
+                  { label: 'Pending', value: leadCounts.pending, icon: Clock, color: 'text-muted-foreground' },
+                ].map(row => (
+                  <div key={row.label} className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-sm">
+                      <row.icon className={`w-4 h-4 ${row.color}`} />
+                      {row.label}
+                    </span>
+                    <span className="font-semibold">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Videos */}
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Videos</p>
+                {[
+                  { label: 'Total', value: videoCounts.total, icon: VideoIcon, color: 'text-purple-500' },
+                  { label: 'Completed', value: videoCounts.completed, icon: CheckCircle2, color: 'text-green-500' },
+                  { label: 'Processing', value: videoCounts.processing, icon: Loader2, color: 'text-blue-500' },
+                  { label: 'Failed', value: videoCounts.failed, icon: XCircle, color: 'text-red-500' },
+                ].map(row => (
+                  <div key={row.label} className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-sm">
+                      <row.icon className={`w-4 h-4 ${row.color}`} />
+                      {row.label}
+                    </span>
+                    <span className="font-semibold">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Campaigns */}
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Campaigns</p>
+                {[
+                  { label: 'Total', value: campaignCounts.total, icon: Send, color: 'text-orange-500' },
+                  { label: 'Running', value: campaignCounts.running, icon: Loader2, color: 'text-blue-500' },
+                  { label: 'Completed', value: campaignCounts.completed, icon: CheckCircle2, color: 'text-green-500' },
+                  { label: 'Draft', value: campaignCounts.draft, icon: Clock, color: 'text-muted-foreground' },
+                ].map(row => (
+                  <div key={row.label} className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-sm">
+                      <row.icon className={`w-4 h-4 ${row.color}`} />
+                      {row.label}
+                    </span>
+                    <span className="font-semibold">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

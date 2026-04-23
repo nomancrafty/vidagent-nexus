@@ -13,6 +13,8 @@ export interface Lead {
   mxServer?: string;
   verifiedAt?: string;
   createdAt: string;
+  csvBatchId?: string;
+  csvFileName?: string;
 }
 
 export interface Video {

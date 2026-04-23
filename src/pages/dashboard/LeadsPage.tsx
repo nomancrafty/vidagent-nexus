@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Lead } from '@/types/data';
-import { getLeads, saveLeads, updateLead, addActivity, getApiKey, saveApiKey } from '@/services/dataService';
+import { getLeads, saveLeads, updateLead, deleteLead, addActivity, getApiKey, saveApiKey } from '@/services/dataService';
 import { verifyEmailsInBatches } from '@/services/emailVerificationService';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -34,17 +34,34 @@ import {
   Clock,
   Key,
   Download,
+  FileText,
+  Eye,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+interface CsvBatch {
+  id: string;
+  fileName: string;
+  uploadedAt: string;
+  leads: Lead[];
+}
 
 export default function LeadsPage() {
   const { user } = useAuth();
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [search, setSearch] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+
+  // Batch view dialog
+  const [viewBatch, setViewBatch] = useState<CsvBatch | null>(null);
+  const [batchSearch, setBatchSearch] = useState('');
+
+  // Delete confirmation dialog
+  const [deletingBatch, setDeletingBatch] = useState<CsvBatch | null>(null);
+  const [isDeletingBatch, setIsDeletingBatch] = useState(false);
 
   // API key dialog state
   const [showKeyDialog, setShowKeyDialog] = useState(false);
@@ -61,6 +78,26 @@ export default function LeadsPage() {
   useEffect(() => {
     loadLeads();
   }, [loadLeads]);
+
+  // ── Group leads into CSV batches ──────────────────────────────────────────────
+
+  const batches = useMemo<CsvBatch[]>(() => {
+    const map = new Map<string, CsvBatch>();
+    // Leads without a batchId get grouped under a legacy batch
+    for (const lead of leads) {
+      const batchId = lead.csvBatchId ?? '__legacy__';
+      const fileName = lead.csvFileName ?? 'Imported Leads';
+      const uploadedAt = lead.createdAt;
+      if (!map.has(batchId)) {
+        map.set(batchId, { id: batchId, fileName, uploadedAt, leads: [] });
+      }
+      map.get(batchId)!.leads.push(lead);
+    }
+    // Sort batches newest first
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+    );
+  }, [leads]);
 
   // ── Sample CSV download ───────────────────────────────────────────────────────
 
@@ -88,7 +125,7 @@ export default function LeadsPage() {
     setDragActive(e.type === 'dragenter' || e.type === 'dragover');
   };
 
-  const parseCSV = (text: string): Lead[] => {
+  const parseCSV = (text: string, batchId: string, fileName: string): Lead[] => {
     const lines = text.split('\n').filter(l => l.trim());
     if (lines.length < 2) return [];
 
@@ -111,7 +148,6 @@ export default function LeadsPage() {
     const idx = (col: string) => headers.indexOf(col);
     return lines.slice(1)
       .map(line => {
-        // Handle quoted fields with commas inside
         const v = line.match(/(".*?"|[^,]+)(?=,|$)/g)?.map(c => c.trim().replace(/^"|"$/g, '')) ?? line.split(',').map(c => c.trim());
         return {
           id: crypto.randomUUID(),
@@ -124,6 +160,8 @@ export default function LeadsPage() {
           companyDescription: v[idx('company description')] || '',
           status: 'uploaded' as const,
           createdAt: new Date().toISOString(),
+          csvBatchId: batchId,
+          csvFileName: fileName,
         };
       })
       .filter(lead => lead.email);
@@ -136,18 +174,19 @@ export default function LeadsPage() {
     }
     setIsUploading(true);
     try {
+      const batchId = crypto.randomUUID();
       const text = await file.text();
-      const newLeads = parseCSV(text);
+      const newLeads = parseCSV(text, batchId, file.name);
       if (newLeads.length > 0) {
         await saveLeads(newLeads);
         addActivity({
           id: crypto.randomUUID(),
           type: 'lead_uploaded',
-          message: `Uploaded ${newLeads.length} leads`,
+          message: `Uploaded "${file.name}" — ${newLeads.length} leads`,
           timestamp: new Date().toISOString(),
           userId: user!.id,
         });
-        toast.success(`Uploaded ${newLeads.length} leads`);
+        toast.success(`"${file.name}" uploaded — ${newLeads.length} leads`);
         await loadLeads();
       }
     } catch {
@@ -166,6 +205,26 @@ export default function LeadsPage() {
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) handleFile(e.target.files[0]);
+    // Reset so same file can be re-uploaded
+    e.target.value = '';
+  };
+
+  // ── Batch delete ──────────────────────────────────────────────────────────────
+
+  const handleDeleteBatch = async () => {
+    if (!deletingBatch) return;
+    setIsDeletingBatch(true);
+    try {
+      await Promise.all(deletingBatch.leads.map(l => deleteLead(l.id)));
+      toast.success(`"${deletingBatch.fileName}" deleted`);
+      setDeletingBatch(null);
+      if (viewBatch?.id === deletingBatch.id) setViewBatch(null);
+      await loadLeads();
+    } catch {
+      toast.error('Failed to delete CSV batch');
+    } finally {
+      setIsDeletingBatch(false);
+    }
   };
 
   // ── Email verification ───────────────────────────────────────────────────────
@@ -190,7 +249,6 @@ export default function LeadsPage() {
     setIsVerifying(true);
     setProgress({ current: 0, total: toVerify.length });
 
-    // Optimistically mark all as verifying
     setLeads(prev =>
       prev.map(l => toVerify.find(tv => tv.id === l.id) ? { ...l, status: 'verifying' } : l),
     );
@@ -213,7 +271,6 @@ export default function LeadsPage() {
         };
 
         await updateLead(lead.id, updates);
-
         setLeads(prev => prev.map(l => l.id === lead.id ? { ...l, ...updates } : l));
         setProgress(prev => prev ? { ...prev, current: prev.current + 1 } : null);
 
@@ -253,18 +310,22 @@ export default function LeadsPage() {
 
   // ── Derived state ─────────────────────────────────────────────────────────────
 
-  const q = search.toLowerCase();
-  const filtered = leads.filter(l =>
-    `${l.firstName} ${l.lastName}`.toLowerCase().includes(q) ||
-    l.email.toLowerCase().includes(q) ||
-    l.company.toLowerCase().includes(q),
-  );
-
   const counts = {
     uploaded: leads.filter(l => l.status === 'uploaded').length,
     valid: leads.filter(l => l.status === 'valid').length,
     invalid: leads.filter(l => l.status === 'invalid').length,
   };
+
+  const filteredBatchLeads = useMemo(() => {
+    if (!viewBatch) return [];
+    const q = batchSearch.toLowerCase();
+    if (!q) return viewBatch.leads;
+    return viewBatch.leads.filter(l =>
+      `${l.firstName} ${l.lastName}`.toLowerCase().includes(q) ||
+      l.email.toLowerCase().includes(q) ||
+      l.company.toLowerCase().includes(q),
+    );
+  }, [viewBatch, batchSearch]);
 
   // ── Status badge ──────────────────────────────────────────────────────────────
 
@@ -273,7 +334,7 @@ export default function LeadsPage() {
       case 'uploaded':
         return (
           <Badge variant="secondary" className="flex items-center gap-1">
-            <Clock className="w-3 h-3" /> Uploaded
+            <Clock className="w-3 h-3" /> Pending
           </Badge>
         );
       case 'verifying':
@@ -297,13 +358,23 @@ export default function LeadsPage() {
     }
   };
 
+  const batchStatusSummary = (batch: CsvBatch) => {
+    const v = batch.leads.filter(l => l.status === 'valid').length;
+    const inv = batch.leads.filter(l => l.status === 'invalid').length;
+    const pend = batch.leads.filter(l => l.status === 'uploaded' || l.status === 'verifying').length;
+    return { v, inv, pend };
+  };
+
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">Leads</h1>
-          <p className="text-muted-foreground mt-1">Upload and verify your lead emails</p>
+          <p className="text-muted-foreground mt-1">Upload CSVs and verify prospect emails</p>
         </div>
         <div className="flex items-center gap-2">
           {progress && (
@@ -383,47 +454,136 @@ export default function LeadsPage() {
         </CardContent>
       </Card>
 
-      {/* Leads Table */}
+      {/* CSV Batches List */}
       <Card>
         <CardHeader>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <CardTitle>All Leads ({leads.length})</CardTitle>
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Search leads…"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-          </div>
+          <CardTitle>Uploaded CSVs ({batches.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {filtered.length > 0 ? (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Company</TableHead>
-                    <TableHead>Website</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead>Result</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map(lead => (
+          {batches.length === 0 ? (
+            <div className="text-center py-12">
+              <FileText className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+              <p className="text-muted-foreground">No CSVs uploaded yet. Upload a file to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {batches.map(batch => {
+                const { v, inv, pend } = batchStatusSummary(batch);
+                return (
+                  <div
+                    key={batch.id}
+                    className="flex items-center gap-4 px-4 py-3 rounded-lg border border-border hover:bg-muted/40 transition-colors"
+                  >
+                    {/* File icon */}
+                    <FileText className="w-5 h-5 text-muted-foreground shrink-0" />
+
+                    {/* File name + date */}
+                    <div className="flex-1 min-w-0">
+                      <button
+                        className="text-sm font-medium text-left hover:text-primary transition-colors truncate block max-w-xs"
+                        onClick={() => { setViewBatch(batch); setBatchSearch(''); }}
+                      >
+                        {batch.fileName}
+                      </button>
+                      <span className="text-xs text-muted-foreground">{formatDate(batch.uploadedAt)}</span>
+                    </div>
+
+                    {/* Lead count */}
+                    <Badge variant="secondary" className="shrink-0">
+                      {batch.leads.length} leads
+                    </Badge>
+
+                    {/* Verification summary */}
+                    <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+                      {v > 0 && (
+                        <Badge className="text-xs bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/30">
+                          {v} valid
+                        </Badge>
+                      )}
+                      {inv > 0 && (
+                        <Badge variant="destructive" className="text-xs">{inv} invalid</Badge>
+                      )}
+                      {pend > 0 && (
+                        <Badge variant="outline" className="text-xs">{pend} pending</Badge>
+                      )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => { setViewBatch(batch); setBatchSearch(''); }}
+                      >
+                        <Eye className="w-4 h-4 mr-1" /> View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => setDeletingBatch(batch)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* View Batch Dialog */}
+      <Dialog open={!!viewBatch} onOpenChange={open => !open && setViewBatch(null)}>
+        <DialogContent className="max-w-5xl w-full max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5" />
+              {viewBatch?.fileName}
+            </DialogTitle>
+            <DialogDescription>
+              {viewBatch?.leads.length} leads · Uploaded {viewBatch ? formatDate(viewBatch.uploadedAt) : ''}
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Search inside dialog */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search leads…"
+              value={batchSearch}
+              onChange={e => setBatchSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          <div className="overflow-auto flex-1 rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Company</TableHead>
+                  <TableHead>Website</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Result</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredBatchLeads.length > 0 ? (
+                  filteredBatchLeads.map(lead => (
                     <TableRow key={lead.id}>
-                      <TableCell className="font-medium">{lead.firstName} {lead.lastName}</TableCell>
-                      <TableCell>{lead.email}</TableCell>
-                      <TableCell>{lead.company}</TableCell>
+                      <TableCell className="font-medium whitespace-nowrap">
+                        {lead.firstName} {lead.lastName}
+                      </TableCell>
+                      <TableCell className="text-sm">{lead.email}</TableCell>
+                      <TableCell className="text-sm">{lead.company}</TableCell>
                       <TableCell className="max-w-[140px] truncate text-sm text-muted-foreground">
                         {lead.website || '—'}
                       </TableCell>
-                      <TableCell className="max-w-[180px] truncate text-sm text-muted-foreground">
+                      <TableCell className="max-w-[200px] truncate text-sm text-muted-foreground">
                         {lead.companyDescription || '—'}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
@@ -431,17 +591,45 @@ export default function LeadsPage() {
                       </TableCell>
                       <TableCell>{statusBadge(lead)}</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <p className="text-muted-foreground">No leads found. Upload a CSV to get started.</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      No leads match your search.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewBatch(null)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deletingBatch} onOpenChange={open => !open && setDeletingBatch(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete CSV Batch</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>"{deletingBatch?.fileName}"</strong>?
+              This will permanently remove all {deletingBatch?.leads.length} leads in this file.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeletingBatch(null)} disabled={isDeletingBatch}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteBatch} disabled={isDeletingBatch}>
+              {isDeletingBatch ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* API Key Dialog */}
       <Dialog open={showKeyDialog} onOpenChange={setShowKeyDialog}>

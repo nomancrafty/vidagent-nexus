@@ -17,6 +17,7 @@ import LeadsPage from "@/pages/dashboard/LeadsPage";
 import CreateVideoPage from "@/pages/dashboard/CreateVideoPage";
 import CampaignsPage from "@/pages/dashboard/CampaignsPage";
 import AnalyticsPage from "@/pages/dashboard/AnalyticsPage";
+import SettingsPage from "@/pages/dashboard/SettingsPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -71,6 +72,7 @@ const App = () => (
               <Route path="videos" element={<CreateVideoPage />} />
               <Route path="campaigns" element={<CampaignsPage />} />
               <Route path="analytics" element={<AnalyticsPage />} />
+              <Route path="settings" element={<SettingsPage />} />
             </Route>
             
             {/* Catch-all */}

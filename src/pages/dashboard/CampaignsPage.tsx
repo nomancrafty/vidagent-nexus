@@ -61,11 +61,15 @@ export default function CampaignsPage() {
     scheduledAt: '',
   });
 
-  const loadData = useCallback(() => {
+  const loadData = useCallback(async () => {
     if (user) {
+      const [allLeads, allVideos] = await Promise.all([
+        getLeads(user.id),
+        getVideos(user.id),
+      ]);
       setCampaigns(getCampaigns(user.id));
-      setLeads(getLeads(user.id).filter(l => l.status === 'verified'));
-      setVideos(getVideos(user.id).filter(v => v.status === 'completed'));
+      setLeads(allLeads.filter(l => l.status === 'valid'));
+      setVideos(allVideos.filter(v => v.status === 'completed'));
     }
   }, [user]);
 

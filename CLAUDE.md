@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev          # Start dev server at http://localhost:8080
+npm run dev          # Start frontend dev server at http://localhost:8080
 npm run build        # Production build
 npm run lint         # ESLint on all TS/TSX files
 npm run test         # Run tests once (Vitest)
@@ -15,26 +15,26 @@ npm run preview      # Preview production build
 
 ## What This System Builds
 
-An end-to-end AI video outreach pipeline:
-1. CSV prospect upload → MailTester.Ninja email verification
-2. Claude AI generates a personalized 60-second video script per prospect
-3. Puppeteer captures a scrolling recording of the prospect's website
-4. FFmpeg composites the avatar video (PiP) over the website recording
-5. HeyGen API (v2) renders the final avatar video
-6. A personalized landing page (`/lp/:jobId`) embeds the video
-7. ManyReach API sends the landing page link via cold email
-8. Analytics pulled from ManyReach + internal job data, displayed in dashboard
+A **personalized Loom-style outreach system at scale** — NOT an AI avatar system.
+
+End-to-end pipeline:
+1. CSV prospect upload
+2. MailTester.Ninja email verification
+3. Puppeteer records a scrolling MP4 video of the prospect's website
+4. Video stored locally under `/uploads/videos/{jobId}.mp4`
+5. ManyReach API sends a cold email with the video link
+6. Analytics pulled from ManyReach (sent + replies + clicks + opens), cached in DB
 
 ## Architecture
 
-### Frontend (this repo — `vidagent-nexus`)
+### Frontend (`vidagent-nexus` — this repo)
 
-Fully client-side React SPA. Data currently persisted in **localStorage** via [src/services/dataService.ts](src/services/dataService.ts). Backend integration points are stubbed — the plan is to wire them to the Node/Express backend described below.
+Client-side React SPA using Supabase for auth and DB. All heavy work is triggered via API calls to the backend.
 
 - [src/App.tsx](src/App.tsx) — React Router v6 config; all dashboard routes wrapped in `<ProtectedRoute>`
-- [src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx) — mock auth via localStorage
+- [src/contexts/AuthContext.tsx](src/contexts/AuthContext.tsx) — Supabase auth provider
 - [src/layouts/DashboardLayout.tsx](src/layouts/DashboardLayout.tsx) — sidebar + topnav shell
-- [src/services/dataService.ts](src/services/dataService.ts) — CRUD for all entities
+- [src/services/dataService.ts](src/services/dataService.ts) — CRUD for all entities via Supabase
 - [src/types/data.ts](src/types/data.ts) — canonical TypeScript interfaces; update here first when changing data shapes
 - `src/components/ui/` — shadcn/ui primitives; regenerate via shadcn CLI, do not edit directly
 
@@ -45,81 +45,294 @@ Fully client-side React SPA. Data currently persisted in **localStorage** via [s
 Module layout under `/modules/`:
 
 ```
-prospects/        CSV parse, MailTester.Ninja verification
-campaigns/        Campaign creation + job orchestration
-video-automation/ HeyGen, Puppeteer, FFmpeg, S3, Claude script, landing page
-outreach/         ManyReach email sending
-analytics/        Aggregate internal DB + ManyReach stats
+prospects/        CSV parse + Supabase insert
+verification/     MailTester.Ninja email verification
+recorder/         Puppeteer website video recording
+email/            ManyReach campaign creation + email send + CSV export
+analytics/        Aggregate ManyReach stats, cache in DB
+cleanup/          Daily cron to delete videos older than 7 days
 ```
 
-**Queue**: BullMQ + Redis — all video generation is async, max 5 concurrent jobs (`MAX_CONCURRENT_VIDEO_JOBS`).  
-**DB**: Supabase (check existing schema).  
-**Storage**: AWS S3 — all video files; `/tmp` is staging only, never permanent.
+**Queue**: BullMQ + Redis — all video recordings are async, max 3–5 concurrent jobs (`MAX_CONCURRENT_RECORDINGS`).
+**DB**: Supabase — prospects, email_logs, analytics, campaigns.
+**Storage**: Local disk — `/uploads/videos/{jobId}.mp4`, served via `express.static`.
 
-### Video Job Pipeline (BullMQ worker steps in order)
+---
+
+## Module Breakdown
+
+### 1. Prospect Upload Module
+
+**Input**: CSV with columns: `firstName, email, company, website`
+
+**Output** — stored in Supabase `prospects` table:
+```json
+{
+  "id": "uuid",
+  "firstName": "string",
+  "email": "string",
+  "company": "string",
+  "website": "string",
+  "emailStatus": "pending"
+}
+```
+
+### 2. Email Verification Module
+
+**API**: MailTester.Ninja (`https://happy.mailtester.ninja/ninja`)
+
+**Logic**:
+- Code `ok` + message `Accepted` → `emailStatus: 'valid'`
+- Code `ko` → `emailStatus: 'invalid'`
+- Code `mb` (catch-all) → `emailStatus: 'risky'`
+
+**Hard Rule**: Never send email if `emailStatus !== 'valid'`
+
+**Rate limiting**: Max 10 requests per 10 seconds (batches of 5 per 600ms)
+
+### 3. Website Video Recorder (Core Feature)
+
+**Goal**: Produce a smooth, Loom-style scrolling MP4 of the prospect's website.
+
+**Tech**: `puppeteer` + `puppeteer-screen-recorder`
+
+**Input**: `website URL`, `jobId`
+
+**Output**: `/uploads/videos/{jobId}.mp4`
+
+**Recording Behavior**:
+1. Open URL, wait for `networkidle2`
+2. Start recording
+3. Pause 2 seconds at top
+4. Smooth scroll through full page (~10–20 seconds of scrolling)
+5. Stop recording
+6. Save file locally
+
+**Timing rules**:
+- Total video: max 30–40 seconds
+- Scrolling must look natural, not robotic
+
+**Signature**:
+```ts
+recordWebsite(url: string, jobId: string): Promise<string> // returns videoPath
+```
+
+**Storage**:
+```
+/uploads/
+  └── videos/
+        └── {jobId}.mp4
+```
+
+**Serve files**:
+```js
+app.use('/uploads', express.static('uploads'));
+```
+
+**Video URL format**:
+```
+${BASE_URL}/uploads/videos/${jobId}.mp4
+```
+
+### 4. Email Sending Module
+
+**API**: ManyReach
+
+**Steps**:
+1. Create campaign in ManyReach
+2. Upload leads to campaign
+3. Send emails
+
+**Email Template**:
+```
+Subject: Quick idea for {{company}}
+
+Hi {{firstName}},
+
+I recorded a quick walkthrough of your website:
+
+{{videoUrl}}
+
+I noticed a few areas that could improve conversions.
+
+Worth a quick chat?
+
+Best,
+{{senderName}}
+```
+
+**Email log** — stored in Supabase `email_logs` table:
+```json
+{
+  "id": "uuid",
+  "prospectId": "string",
+  "campaignId": "string",
+  "status": "sent | failed",
+  "sentAt": "ISO timestamp",
+  "messageId": "string",
+  "videoPath": "string"
+}
+```
+
+**CSV Export**: Support exporting leads + video URLs as CSV for manual ManyReach upload if needed.
+
+### 5. Analytics Module
+
+**Track only**:
+- Total Emails Sent
+- Total Replies
+- Total Clicked
+- Total Opened
+
+**Calculations**:
+```
+replyRate = (totalReplies / totalSent) * 100
+```
+
+**Analytics record** — stored in Supabase `analytics` table:
+```json
+{
+  "campaignId": "string",
+  "totalSent": "number",
+  "totalReplies": "number",
+  "totalClicked": "number",
+  "totalOpened": "number",
+  "replyRate": "number",
+  "lastSyncedAt": "ISO timestamp"
+}
+```
+
+**Sync Rule**: Pull from ManyReach every 15 minutes and cache in DB. Never call ManyReach API on every dashboard load.
+
+---
+
+## Frontend Dashboard Requirements
+
+### KPI Cards
+- Total Sent
+- Total Replies
+- Reply Rate %
+- Total Opened / Clicked
+
+### Charts (Recharts)
+1. **Line/Area**: Emails Sent Over Time (daily)
+2. **Line/Area**: Replies Over Time (daily)
+3. **Line**: Reply Rate Trend
+
+---
+
+## Video Job Pipeline (BullMQ worker steps in order)
 
 ```
-Claude script → Puppeteer website capture → S3 upload → HeyGen submit
-→ Poll/webhook for completion → Download video → FFmpeg composite (if website_bg)
-→ S3 upload final → DB update → ManyReach send → Prospect marked 'sent'
+Prospect selected → Puppeteer records website → Save MP4 to /uploads/videos/{jobId}.mp4
+→ DB update (videoPath, status: 'done') → ManyReach email sent → Prospect marked 'sent'
 ```
 
-On failure: log `{ jobId, step, error, timestamp }`, set `status: 'failed'`, surface in dashboard for manual retry. No automatic retries except where noted.
+On failure: log `{ jobId, step, error, timestamp }`, set `status: 'failed'`, surface in dashboard for manual retry.
 
-### Key API Routes
+---
+
+## Key API Routes
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/prospects/upload` | Upload CSV |
-| POST | `/api/prospects/verify/:batchId` | Run email verification |
-| POST | `/api/campaigns` | Create campaign + queue jobs |
-| GET | `/api/video/status/:jobId` | Poll job status |
-| POST | `/api/video/webhook` | HeyGen webhook callback |
-| GET | `/lp/:jobId` | Serve personalized landing page |
-| GET | `/api/analytics/:campaignId` | Get merged analytics |
+| POST | `/api/prospects/upload` | Upload and parse CSV |
+| POST | `/api/prospects/verify/:batchId` | Run MailTester.Ninja verification |
+| POST | `/api/recordings/start` | Queue website recording jobs |
+| GET | `/api/recordings/status/:jobId` | Poll recording job status |
+| POST | `/api/email/send/:campaignId` | Send emails via ManyReach |
+| GET | `/api/email/export/:campaignId` | Export campaign CSV |
+| GET | `/api/analytics/:campaignId` | Get cached analytics |
 | POST | `/api/analytics/:campaignId/sync` | Force sync ManyReach stats |
+| GET | `/uploads/videos/:jobId.mp4` | Serve recorded video (static) |
 
-### Landing Page (`GET /lp/:jobId`)
+---
 
-Handlebars-rendered HTML only — no JS framework. Must load under 2 seconds. Variables: `{{firstName}}`, `{{company}}`, `{{videoUrl}}`, `{{senderName}}`, `{{ctaUrl}}`. Full-width autoplay-muted video player with CTA button below.
+## Optional Feature (if time permits)
 
-### Analytics Dashboard Charts
+**Landing Page**: `GET /lp/:jobId`
+- Simple HTML page (Handlebars or plain HTML)
+- Embeds the prospect's video
+- CTA button below video
+- Must load under 2 seconds
+- Variables: `{{firstName}}`, `{{company}}`, `{{videoUrl}}`, `{{senderName}}`, `{{ctaUrl}}`
 
-1. Funnel: Uploaded → Verified → Videos done → Sent → Opened → Replied
-2. Line: Opens / Replies over time (daily)
-3. Donut: Email verification breakdown (valid / invalid / risky)
-4. Bar: Video job statuses (queued / processing / done / failed)
-5. KPI cards: Total sent, Open rate %, Reply rate %, Bounce rate %
+---
 
-ManyReach analytics are **cached in DB, synced every 15 minutes** — never call their API per page load.
+## Cleanup Job (Important)
+
+Run a daily cron job:
+- Delete all video files under `/uploads/videos/` older than 7 days
+- Update DB records accordingly
+
+---
+
+## Error Handling
+
+On any step failure, log:
+```json
+{
+  "jobId": "string",
+  "step": "recording | email | verification",
+  "error": "string",
+  "timestamp": "ISO timestamp"
+}
+```
+
+Set prospect/job `status: 'failed'` and surface in dashboard for manual retry. No automatic retries unless explicitly noted.
+
+---
 
 ## Environment Variables
 
 ```
-HEYGEN_API_KEY=
+# Supabase
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
+
+# Backend services
 MAILTESTER_API_KEY=
 MANYREACH_API_KEY=
-ANTHROPIC_API_KEY=
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_BUCKET_NAME=vidagent-videos
-AWS_REGION=us-east-1
-REDIS_URL=redis://localhost:6379
+
+# Server
 BASE_URL=https://yourdomain.com
-MAX_CONCURRENT_VIDEO_JOBS=5
+PORT=3000
+REDIS_URL=redis://localhost:6379
+MAX_CONCURRENT_RECORDINGS=5
+
+# Analytics
 ANALYTICS_SYNC_INTERVAL_MINUTES=15
 ```
 
+---
+
 ## Hard Rules
 
-- Never send emails to prospects with `emailStatus: 'invalid'`
-- Never use HeyGen v1 personalized video endpoints (deprecated Jan 2025) — use v2 only
-- Never store `avatar_id` or `voice_id` as hardcoded values — always read from sender profile in DB
-- Never store video files permanently on local disk — `/tmp` staging then S3
-- Never call ManyReach analytics API per page load — use cached DB data only
-- All heavy work goes through BullMQ — never block the main event loop
-- Structured logging on every job step: `{ jobId, step, status, durationMs, timestamp }`
+- **Never** send email to a prospect where `emailStatus !== 'valid'`
+- **Never** use HeyGen, S3, or AI avatars — this is a Puppeteer-based recording system
+- **Never** store video files permanently in `/tmp` — save to `/uploads/videos/`
+- **Never** call ManyReach analytics API on every page load — use cached DB data
+- **Never** block the main event loop — all recordings go through BullMQ
+- **Always** limit concurrent recordings to `MAX_CONCURRENT_RECORDINGS` (3–5)
+- **Always** log structured errors on every job step: `{ jobId, step, error, timestamp }`
+- **Always** clean up videos older than 7 days via the daily cron job
+
+---
 
 ## Testing
 
 Tests use Vitest with jsdom. Test files match `src/**/*.{test,spec}.{ts,tsx}`. Setup file at [src/test/setup.ts](src/test/setup.ts) polyfills `window.matchMedia`.
+
+---
+
+## What This Is NOT
+
+This is **not** an AI avatar video system.
+This is a **"Personalized Loom-style outreach system at scale"**.
+
+Focus on:
+- Speed of recording
+- Stability of the Puppeteer recorder
+- Clean, smooth video output
+- Reliable email sending
+- Accurate analytics
