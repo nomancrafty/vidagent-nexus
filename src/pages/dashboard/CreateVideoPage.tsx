@@ -273,6 +273,8 @@ export default function CreateVideoPage() {
         if (lead.website) {
           console.log('[Recorder] Recording website:', lead.website);
           const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3000';
+
+          // Start recording — backend returns immediately, processes in background
           const recRes = await fetch(`${backendUrl}/api/recordings/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -282,8 +284,24 @@ export default function CreateVideoPage() {
             const recErr = await recRes.json().catch(() => ({}));
             throw new Error((recErr as { error?: string }).error ?? `Recording failed ${recRes.status}`);
           }
-          const recData = await recRes.json() as { videoAssetId: string };
-          videoAssetId = recData.videoAssetId;
+
+          // Poll /status/:jobId every 5s until done or error (max 5 min)
+          const POLL_MS = 5_000;
+          const TIMEOUT_MS = 5 * 60 * 1000;
+          const deadline = Date.now() + TIMEOUT_MS;
+          while (true) {
+            await new Promise(r => setTimeout(r, POLL_MS));
+            if (Date.now() > deadline) throw new Error('Recording timed out after 5 minutes');
+
+            const statusRes = await fetch(`${backendUrl}/api/recordings/status/${video.id}`);
+            if (!statusRes.ok) throw new Error(`Recording status check failed ${statusRes.status}`);
+
+            const job = await statusRes.json() as { status: string; videoAssetId?: string; error?: string };
+            console.log('[Recorder] status:', job.status);
+
+            if (job.status === 'done') { videoAssetId = job.videoAssetId; break; }
+            if (job.status === 'error') throw new Error(job.error ?? 'Recording failed');
+          }
           console.log('[Recorder] videoAssetId:', videoAssetId);
         }
 
