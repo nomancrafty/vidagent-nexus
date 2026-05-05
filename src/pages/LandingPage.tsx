@@ -1,14 +1,13 @@
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { 
-  Bot, 
-  Mail, 
-  Video, 
-  BarChart3, 
-  Users, 
-  Zap, 
-  Target, 
-  ArrowRight, 
+import {
+  Bot,
+  Mail,
+  Video,
+  BarChart3,
+  Users,
+  Send,
+  ArrowRight,
   CheckCircle2,
   Sparkles
 } from 'lucide-react';
@@ -158,33 +157,33 @@ export default function LandingPage() {
             {[
               {
                 icon: Users,
-                title: 'Lead Discovery',
-                description: 'Upload CSV files with prospect data. Our AI verifies emails and enriches contact information automatically.'
+                title: 'CSV Lead Management',
+                description: 'Drag-and-drop CSV uploads with strict column validation. Leads are grouped into batches you can review, search, and delete in one click.'
               },
               {
                 icon: Mail,
                 title: 'Email Verification',
-                description: 'Reduce bounce rates with real-time email verification. Only reach valid, active email addresses.'
+                description: 'Bulk-verify every prospect through MillionVerifier. Valid, invalid, and catch-all addresses are flagged automatically — only valid leads move forward.'
+              },
+              {
+                icon: Sparkles,
+                title: 'AI Script Generation',
+                description: 'Google Gemini writes a unique 60-second video script for each prospect, personalized from their company description and your campaign pitch.'
               },
               {
                 icon: Video,
-                title: 'AI Video Generation',
-                description: 'Create personalized video messages at scale using AI avatars that speak directly to each prospect.'
+                title: 'Personalized Avatar Video',
+                description: 'Puppeteer records a scrolling capture of the prospect’s website, then HeyGen overlays a circle AI avatar that speaks the script — one unique video per lead.'
               },
               {
-                icon: Target,
-                title: 'Smart Campaigns',
-                description: 'Build automated campaign sequences that deliver the right message at the right time.'
+                icon: Send,
+                title: 'Cold Email Campaigns',
+                description: 'Launch ManyReach campaigns in four steps: create list, create campaign, bulk add prospects with the personalized video link, and start sending.'
               },
               {
                 icon: BarChart3,
                 title: 'Real-time Analytics',
-                description: 'Track open rates, video views, and replies. Optimize your campaigns with data-driven insights.'
-              },
-              {
-                icon: Zap,
-                title: 'Workflow Automation',
-                description: 'Connect with your existing tools via n8n. Automate entire sales workflows effortlessly.'
+                description: 'Sent, opens, clicks, replies, and bounces sync from ManyReach every 15 minutes into the dashboard, with funnel and KPI charts powered by Recharts.'
               }
             ].map((feature, i) => (
               <div 
@@ -217,7 +216,7 @@ export default function LandingPage() {
               </p>
               <Link to="/auth/signup">
                 <Button size="lg" variant="secondary" className="text-lg px-8 py-6">
-                  Start Free Trial
+                  Start
                   <ArrowRight className="w-5 h-5 ml-2" />
                 </Button>
               </Link>
@@ -239,7 +238,7 @@ export default function LandingPage() {
             
             <div className="text-center md:text-right">
               <p className="text-muted-foreground">
-                A Final Year Project by Bahria University
+                A Final Year Project
               </p>
               <p className="text-sm text-muted-foreground mt-1">
                 © {new Date().getFullYear()} All rights reserved.

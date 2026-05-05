@@ -93,8 +93,22 @@ export default function CreateVideoPage() {
             videoUrl: result.videoUrl,
             thumbnailUrl: result.thumbnailUrl,
           });
+          addActivity({
+            id: crypto.randomUUID(),
+            type: 'video_completed',
+            message: `Video ready: ${video.name}`,
+            timestamp: new Date().toISOString(),
+            userId: user.id,
+          });
         } else if (result.status === 'failed') {
           await updateVideo(video.id, { status: 'failed', errorMessage: result.error });
+          addActivity({
+            id: crypto.randomUUID(),
+            type: 'video_failed',
+            message: `Video failed: ${video.name}${result.error ? ` — ${result.error}` : ''}`,
+            timestamp: new Date().toISOString(),
+            userId: user.id,
+          });
         }
       } catch (e) {
         console.error('[Poll] Error polling', video.heygenVideoId, e);
@@ -183,6 +197,16 @@ export default function CreateVideoPage() {
     setScripts(newScripts);
     setIsGeneratingScripts(false);
     setScriptProgress(null);
+    const generatedCount = leads.filter(l => newScripts[l.id]).length;
+    if (generatedCount > 0) {
+      addActivity({
+        id: crypto.randomUUID(),
+        type: 'script_generated',
+        message: `Generated ${generatedCount} script${generatedCount === 1 ? '' : 's'} with Gemini`,
+        timestamp: new Date().toISOString(),
+        userId: user!.id,
+      });
+    }
     toast.success(`Generated ${Object.keys(newScripts).length} scripts`);
   };
 

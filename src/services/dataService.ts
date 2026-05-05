@@ -5,13 +5,26 @@ import { supabase } from '@/lib/supabase';
 const CAMPAIGNS_KEY = 'hiring_ai_campaigns';
 const ACTIVITIES_KEY = 'hiring_ai_activities';
 
+export type ActivityType =
+  | 'lead_uploaded'
+  | 'lead_verified'
+  | 'script_generated'
+  | 'video_created'
+  | 'video_completed'
+  | 'video_failed'
+  | 'campaign_started'
+  | 'campaign_completed';
+
 export interface Activity {
   id: string;
-  type: 'lead_uploaded' | 'lead_verified' | 'video_created' | 'campaign_started' | 'campaign_completed';
+  type: ActivityType;
   message: string;
   timestamp: string;
   userId: string;
 }
+
+const NOTIFICATIONS_LAST_SEEN_KEY = 'hiring_ai_notifications_last_seen';
+export const ACTIVITY_EVENT = 'hiring_ai:activity';
 
 function getFromStorage<T>(key: string): T[] {
   const stored = localStorage.getItem(key);
@@ -202,17 +215,46 @@ export function deleteCampaign(id: string): void {
 
 // ─── ACTIVITIES (localStorage) ────────────────────────────────────────────────
 
-export function getActivities(userId: string): Activity[] {
-  return getFromStorage<Activity>(ACTIVITIES_KEY)
+export function getActivities(userId: string, limit = 10): Activity[] {
+  const sorted = getFromStorage<Activity>(ACTIVITIES_KEY)
     .filter(a => a.userId === userId)
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, 10);
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  return limit > 0 ? sorted.slice(0, limit) : sorted;
 }
 
 export function addActivity(activity: Activity): void {
   const activities = getFromStorage<Activity>(ACTIVITIES_KEY);
   activities.push(activity);
   saveToStorage(ACTIVITIES_KEY, activities);
+  // Broadcast so TopNavbar (or anything else) can refresh without a re-render hack
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(ACTIVITY_EVENT, { detail: activity }));
+  }
+}
+
+// ─── NOTIFICATIONS (last-seen tracking) ──────────────────────────────────────
+
+function lastSeenKey(userId: string): string {
+  return `${NOTIFICATIONS_LAST_SEEN_KEY}:${userId}`;
+}
+
+export function getNotificationsLastSeen(userId: string): string | null {
+  return localStorage.getItem(lastSeenKey(userId));
+}
+
+export function markNotificationsRead(userId: string): void {
+  localStorage.setItem(lastSeenKey(userId), new Date().toISOString());
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(ACTIVITY_EVENT));
+  }
+}
+
+export function getUnreadCount(userId: string): number {
+  const lastSeen = getNotificationsLastSeen(userId);
+  const all = getActivities(userId, 0);
+  if (!lastSeen) return all.length;
+  const lastSeenMs = new Date(lastSeen).getTime();
+  return all.filter(a => new Date(a.timestamp).getTime() > lastSeenMs).length;
 }
 
 // ─── ANALYTICS ────────────────────────────────────────────────────────────────
