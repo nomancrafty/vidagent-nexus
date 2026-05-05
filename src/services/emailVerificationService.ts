@@ -1,15 +1,14 @@
-// Apify actor: account56~email-verifier (powered by MillionVerifier)
-// Endpoint accepts multiple emails per call — no per-email rate limit.
 const APIFY_ENDPOINT =
-  'https://api.apify.com/v2/acts/account56~email-verifier/run-sync-get-dataset-items';
+  'https://api.apify.com/v2/acts/michael.g~email-verifier-validator/run-sync-get-dataset-items';
 
 interface ApifyResultItem {
   email: string;
-  result: 'ok' | 'catch_all' | 'unknown' | 'error' | 'disposable' | 'invalid' | string;
-  quality: '' | 'good' | 'bad' | 'risky' | string;
-  subresult?: string;
+  status: 'good' | 'bad' | 'risky' | string;
+  technical_status: 'valid' | 'invalid' | 'catch_all' | 'unknown' | string;
+  reason: string;
   free?: boolean;
   role?: boolean;
+  disposable?: boolean;
   error?: string;
 }
 
@@ -22,18 +21,15 @@ export interface VerificationResult {
 }
 
 function mapItem(item: ApifyResultItem): VerificationResult {
-  switch (item.result) {
-    case 'ok':
-      return { code: 'ok', message: item.result, mx: '', isValid: true };
-    case 'catch_all':
-      return { code: 'mb', message: item.result, mx: '', isValid: false };
-    default:
-      return { code: 'ko', message: item.result, mx: '', isValid: false };
+  if (item.technical_status === 'catch_all') {
+    return { code: 'mb', message: item.technical_status, mx: '', isValid: false };
   }
+  if (item.technical_status === 'valid') {
+    return { code: 'ok', message: item.reason, mx: '', isValid: true };
+  }
+  return { code: 'ko', message: item.technical_status ?? item.reason, mx: '', isValid: false };
 }
 
-// Runs one Apify actor call for up to `batchSize` emails and returns a
-// map of email → result. Results matched by email address (not index).
 async function verifyBatch(
   emails: string[],
   apiToken: string,
@@ -48,7 +44,6 @@ async function verifyBatch(
   if (!response.ok) throw new Error(`Apify HTTP ${response.status}`);
 
   const raw = await response.json();
-  // Apify returns { items: [...] } or a bare array depending on version
   const items: ApifyResultItem[] = Array.isArray(raw) ? raw : (raw.items ?? []);
 
   const map = new Map<string, VerificationResult>();
@@ -85,7 +80,6 @@ export async function verifyEmailsInBatches(
         onResult(email, result, result ? undefined : 'No result returned');
       }
     } catch (err) {
-      // If the whole batch fails, report error for each email in it
       for (const email of chunk) {
         onResult(email, null, err instanceof Error ? err.message : 'Batch error');
       }
