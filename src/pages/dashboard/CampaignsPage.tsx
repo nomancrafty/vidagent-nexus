@@ -151,7 +151,7 @@ export default function CampaignsPage() {
           if (lead.lastName)  prospect.lastName  = lead.lastName;
           if (lead.company)   prospect.company   = lead.company;
           if (lead.website)   prospect.website   = lead.website;
-          if (videoUrl)       prospect.custom4   = videoUrl;
+          if (videoUrl)       prospect.screenshotUrl = videoUrl;
           return prospect;
         });
 
